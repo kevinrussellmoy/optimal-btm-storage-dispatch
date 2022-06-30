@@ -25,15 +25,15 @@ BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwal
 BAT_KWH = 14.0  # Rated energy of battery, in kWh.
 # Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
 # but I have also seen that it's actually 14kwh, 13.5kWh usable
-BAT_KWH_MIN = 0.0 * BAT_KWH  # Minimum SOE of battery, 10% of rate
-BAT_KWH_MAX = 1.0 * BAT_KWH  # Maximum SOE of battery, 90% of rated
+BAT_KWH_MIN = 0.2 * BAT_KWH  # Minimum SOE of battery, 10% of rated
+BAT_KWH_MAX = 0.8 * BAT_KWH  # Maximum SOE of battery, 90% of rated
 BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
 HR_FRAC = (
     15 / 60
 )  # Data at 15 minute intervals, which is 0.25 hours. Need for conversion between kW <-> kWh
 
 # Import load and tariff rate data; convert to numpy array and get length
-df = pd.read_csv("load_tariff.csv", index_col=0)
+df = pd.read_csv("load_tariff_9836.csv", index_col=0)
 df.index = pd.to_datetime(df.index)
 
 # %% Function to compute optimal monthly dispatch given load, tariff, pv, and start and end dates
@@ -41,7 +41,7 @@ df.index = pd.to_datetime(df.index)
 # Output: all optimal variables plus TOU costs (for both ESS and no ESS scenarios
 
 def opt_tou(df, month_str):
-    load = df.loc[month_str].gridnopv.to_numpy()
+    load = df.loc[month_str].load.to_numpy()
     grid_no_ess = df.loc[month_str].grid.to_numpy()
     pv = df.loc[month_str].solar.to_numpy()
     tariff = df.loc[month_str].tariff.to_numpy()
@@ -180,7 +180,7 @@ for month_str in MONTH_STRS:
 df_output = pd.DataFrame()
 df_output.index = df.index
 df_output["pv"] = df.solar
-df_output["load"] = df.gridnopv
+df_output["load"] = df.load
 df_output["tariff"] = df.tariff
 df_output["tou_runs"] = tou_runs
 df_output["grid_runs"] = grid_runs
@@ -204,7 +204,7 @@ ax1.xaxis.set_major_formatter(xfmt)
 ax1.set_xlabel("Date")
 ax1.set_ylabel("Revenue, $")
 ax1.set_title("ESS Net Profit")
-p1 = ax1.plot(times_plt, df.gridnopv * df.tariff *HR_FRAC -tou_runs)
+p1 = ax1.plot(times_plt, df.load * df.tariff *HR_FRAC -tou_runs)
 plt.grid()
 
 # %% Cumulative profit from ESS
@@ -256,7 +256,7 @@ ax1.set_xlim(times_plt[0], times_plt[0 + 4*24*7])
 ax1.set_xlabel("Date")
 ax1.set_ylabel("Power, kW")
 ax1.set_title("System Power Flows")
-p1 = ax1.plot(times_plt, df.gridnopv, linewidth=4, linestyle=":")
+p1 = ax1.plot(times_plt, df.load, linewidth=4, linestyle=":")
 p2 = ax1.plot(times_plt, grids)
 p3 = ax1.plot(times_plt, ess_ds - ess_cs)
 p4 = ax1.plot(times_plt, pv_esss+pv_grids+pv_loads)
