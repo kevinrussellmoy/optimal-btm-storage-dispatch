@@ -10,7 +10,16 @@ from gurobipy import GRB
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# Set environment variables:
+# Plot formatting defaults
+plt.rc('ytick', direction='out')
+plt.rc('grid', color='w', linestyle='solid')
+plt.rcParams['figure.figsize'] = [10, 8]
+plt.rcParams.update({'font.size': 18})
+plt.rc('xtick', direction='out')
+plt.rc('patch', edgecolor='#E6E6E6')
+plt.rc('lines', linewidth=2)
+
+# %%Set environment variables:
 # LOAD_LEN = load.size  # length of optimization
 BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwall
 BAT_KWH = 14.0  # Rated energy of battery, in kWh.
@@ -132,7 +141,7 @@ def opt_tou(df, month_str):
     print("Cumulative savings:")
     print(np.sum(grid_run - tou_run))
 
-    return tou_run, grid_run, grid.X, ess_d.X, ess_c.X, pv_ess.X, pv_grid.X, pv_load.X
+    return tou_run, grid_run, grid.X, ess_d.X, ess_c.X, ess_E.X, pv_ess.X, pv_grid.X, pv_load.X
 
 
 
@@ -146,28 +155,47 @@ MONTH_STRS = ["2015-01", "2015-02", "2015-03", "2015-04", "2015-05", "2015-06",
 # Allocate arrays to store output data
 tou_runs = []
 grid_runs = []
+grids = []
 ess_ds = []
 ess_cs = []
+ess_Es = []
 pv_esss = []
 pv_grids = []
 pv_loads = []
 
 for month_str in MONTH_STRS:
-    tou_run, grid_run, grid, ess_d, ess_c, pv_ess, pv_grid, pv_load = opt_tou(df, month_str)
+    tou_run, grid_run, grid, ess_d, ess_c, ess_E, pv_ess, pv_grid, pv_load = opt_tou(df, month_str)
     tou_runs = np.hstack((tou_runs, tou_run))
     grid_runs = np.hstack((grid_runs, grid_run))
+    grids = np.hstack((grids, grid))
     ess_ds = np.hstack((ess_ds, ess_d))
     ess_cs = np.hstack((ess_cs, ess_c))
+    ess_Es = np.hstack((ess_Es, ess_E))
     pv_esss = np.hstack((pv_esss, pv_ess))
     pv_grids = np.hstack((pv_grids, pv_grid))
     pv_loads = np.hstack((pv_loads, pv_load))
 
+# %% Stack output DF
 
+df_output = pd.DataFrame()
+df_output.index = df.index
+df_output["pv"] = df.solar
+df_output["load"] = df.gridnopv
+df_output["tariff"] = df.tariff
+df_output["tou_runs"] = tou_runs
+df_output["grid_runs"] = grid_runs
+df_output["grids"] = grids
+df_output["ess_disp"] = ess_ds - ess_cs
+df_output["ess_soe"] = ess_Es
+df_output["pv_esss"] = pv_esss
+df_output["pv_grids"] = pv_grids
+df_output["pv_loads"] = pv_loads
 
+df_output.to_csv("df_9836_output.csv")
 
 # %% Net profit from ESS
 # TODO: Fix these plots
-times_plt = times[:opt_len]
+times_plt = df.index
 fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
 fig.autofmt_xdate()
 plt.gcf().autofmt_xdate()
@@ -175,21 +203,21 @@ xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
 ax1.xaxis.set_major_formatter(xfmt)
 ax1.set_xlabel("Date")
 ax1.set_ylabel("Revenue, $")
-ax1.set_title("ESS Net Profit, Complete Optimization")
-p1 = ax1.plot(times_plt, load_opt * tariff_opt *HR_FRAC -tou_run)
+ax1.set_title("ESS Net Profit")
+p1 = ax1.plot(times_plt, df.gridnopv * df.tariff *HR_FRAC -tou_runs)
 plt.grid()
 
 # %% Cumulative profit from ESS
-times_plt = times[:opt_len]
+times_plt = df.index
 fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
 fig.autofmt_xdate()
 plt.gcf().autofmt_xdate()
 xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
 ax1.xaxis.set_major_formatter(xfmt)
 ax1.set_xlabel("Date")
-ax1.set_ylabel("Revenue, $")
-ax1.set_title("Cumulative ESS Savings, Complete Optimization")
-p1 = ax1.plot(times_plt, np.cumsum(np.array(tou_run)))
+ax1.set_ylabel("Savings [$]")
+ax1.set_title("Cumulative ESS Savings")
+p1 = ax1.plot(times_plt, np.cumsum(np.array(tou_runs)))
 plt.grid()
 
 # %% Test plots!
@@ -200,23 +228,39 @@ plt.gcf().autofmt_xdate()
 xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
 ax1.xaxis.set_major_formatter(xfmt)
 ax1.set_xlabel("Date")
-ax1.set_ylabel("Power, kW")
-ax1.set_title("Net ESS Dispatch")
-p1 = ax1.plot(times_plt, ess_d.X - ess_c.X)
+ax1.set_ylabel("Power [kW]")
+ax1.set_title("ESS Dispatch")
+p1 = ax1.plot(times_plt, ess_ds - ess_cs)
 plt.grid()
-# %% Load power flow disaggregation
+
+# %% Test plots!
+# State of Energy (SOE) of ESS
 fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
 fig.autofmt_xdate()
 plt.gcf().autofmt_xdate()
 xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
 ax1.xaxis.set_major_formatter(xfmt)
 ax1.set_xlabel("Date")
+ax1.set_ylabel("SOE [-]")
+ax1.set_title("ESS State of Energy")
+p1 = ax1.plot(times_plt, ess_Es/BAT_KWH)
+plt.grid()
+
+# %% Load power flow disaggregation
+fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+fig.autofmt_xdate()
+plt.gcf().autofmt_xdate()
+xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
+ax1.xaxis.set_major_formatter(xfmt)
+ax1.set_xlim(times_plt[0], times_plt[0 + 4*24*7])
+ax1.set_xlabel("Date")
 ax1.set_ylabel("Power, kW")
-ax1.set_title("Grid and ESS Contribution to Load")
-p1 = ax1.plot(times_opt, load_opt, linewidth=4, linestyle=":")
-p2 = ax1.plot(times_opt, grid.X)
-p3 = ax1.plot(times_opt, ess_d.X - ess_c.X)
-plt.legend(["Total Load Demand", "Grid Supply", "ESS Supply"])
+ax1.set_title("System Power Flows")
+p1 = ax1.plot(times_plt, df.gridnopv, linewidth=4, linestyle=":")
+p2 = ax1.plot(times_plt, grids)
+p3 = ax1.plot(times_plt, ess_ds - ess_cs)
+p4 = ax1.plot(times_plt, pv_esss+pv_grids+pv_loads)
+plt.legend(["Load Demand", "Grid Supply", "ESS Dispatch", "PV Generation"])
 plt.grid()
 
 # %%
