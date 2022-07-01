@@ -9,21 +9,35 @@ from gurobipy import GRB
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# # Plot formatting defaults
-# plt.rc('ytick', direction='out')
-# plt.rc('grid', color='w', linestyle='solid')
-# plt.rcParams['figure.figsize'] = [10, 8]
-# plt.rcParams.update({'font.size': 18})
-# plt.rc('xtick', direction='out')
-# plt.rc('patch', edgecolor='#E6E6E6')
-# plt.rc('lines', linewidth=2)
+# Plot formatting defaults
+plt.rc('ytick', direction='out')
+plt.rc('grid', color='w', linestyle='solid')
+plt.rcParams['figure.figsize'] = [10, 8]
+plt.rcParams.update({'font.size': 14})
+plt.rc('xtick', direction='out')
+plt.rc('patch', edgecolor='#E6E6E6')
+plt.rc('lines', linewidth=2)
 
 # %%Set environment variables:
-# LOAD_LEN = load.size  # length of optimization
-BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwall
-BAT_KWH = 14.0  # Rated energy of battery, in kWh.
-# Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
-# but I have also seen that it's actually 14kwh, 13.5kWh usable
+load_tariff_name = "9836"
+# load_tariff_name = "LBNL_bldg59"
+
+# Import load and tariff rate data; convert to numpy array and get length
+df = pd.read_csv("load_tariff_" + load_tariff_name + ".csv", index_col=0)
+df.index = pd.to_datetime(df.index)
+
+if load_tariff_name == "LBNL_bldg59":
+    df = df[0:-1] # Remove last entry of 1/1/2020 (ew)
+    # C&I BATTERY (based off Tesla Powerpack, multiplied by 2 for 4 hour system)
+    BAT_KW = 250.0  # Rated power of battery, in kW, continuous power for the Powerpack
+    BAT_KWH = 475.0 * 2  # Rated energy of battery, in kWh.
+else:
+    # RESIDENTIAL BATTERY
+    BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwall
+    BAT_KWH = 14.0  # Rated energy of battery, in kWh.
+    # Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
+    # but I have also seen that it's actually 14kwh, 13.5kWh usable
+
 BAT_KWH_MIN = 0.2 * BAT_KWH  # Minimum SOE of battery, 10% of rated
 BAT_KWH_MAX = 0.8 * BAT_KWH  # Maximum SOE of battery, 90% of rated
 BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
@@ -31,37 +45,43 @@ HR_FRAC = (
     15 / 60
 )  # Data at 15 minute intervals, which is 0.25 hours. Need for conversion between kW <-> kWh
 
-# Import load and tariff rate data; convert to numpy array and get length
-df = pd.read_csv("load_tariff_9836.csv", index_col=0)
-df.index = pd.to_datetime(df.index)
+
 
 # %% Function to compute optimal monthly dispatch given load, tariff, pv, and start and end dates
-# Input: df with columns gridnopv, grid, solar, tariff, and index of datetime for timeseries
+# Input: df with columns load, grid, solar, tariff, and index of datetime for timeseries
 # Output: all optimal variables plus TOU costs (for both ESS and no ESS scenarios
 
 def opt_tou(df, month_str):
+
+    # TODO: Force load, pv, tariff, times to be all the same length
+    opt_len = len(df.loc[month_str])
+    
     load = df.loc[month_str].load.to_numpy()
-    grid_no_ess = df.loc[month_str].grid.to_numpy()
-    pv = df.loc[month_str].solar.to_numpy()
     tariff = df.loc[month_str].tariff.to_numpy()
-    times = df.loc[month_str].index
+
+    # Introduce pv as zeros if solar does not exist
+    if not "solar" in df:
+        pv = np.zeros((opt_len,))
+    else:
+        pv = df.loc[month_str].solar.to_numpy()
+
+    # Introduce peakdemand as zero if peakdemand does not exist
+    if not "peakdemand" in df:
+        pd_opt = 0.0
+    else:
+        pd_opt = df.loc[month_str].peakdemand.to_numpy()[0]
 
     load_opt = load
     tariff_opt = tariff
     pv_opt = np.maximum(pv, 0) ## force this to be positive
-    times_opt = times
 
-    # TODO: Force load, pv, tariff, times to be all the same length
-    opt_len = np.shape(load)[0]
-
-    # TOU + LMP Optimization configuration
-
+    # TOU Optimization configuration
     # Create a new model
     m = gp.Model('tou')
     m.Params.LogToConsole = 0  # suppress console output
+    
     # Create variables:
-
-    # each TOU power flw
+    # each TOU power flow
     # format: to_from
     ess_load = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='ess_load')
     grid_ess = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='grid_ess')
@@ -70,7 +90,6 @@ def opt_tou(df, month_str):
     pv_load = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='pv_load')
     pv_grid = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='pv_grid')
     grid = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='grid')
-    load_curtail = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='load_curtail')
 
     # ESS Power dispatch to TOU (positive=discharge, negative=charge)
     ess_c = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='ess_c')
@@ -83,8 +102,10 @@ def opt_tou(df, month_str):
     #Energy stored in ESS
     ess_E = m.addMVar(opt_len, vtype=GRB.CONTINUOUS, name='E')
 
+    # Peak demand from grid variable
+    pk_demand_grid = m.addVar(vtype=GRB.CONTINUOUS, name='pk_demand_grid')
+
     # Constrain initlal and final stored energy in battery
-    # TODO: Modify this to account for MPC energy as an input
     m.addConstr(ess_E[0] == BAT_KWH_INIT)
     m.addConstr(ess_E[opt_len-1] == BAT_KWH_INIT)
 
@@ -120,17 +141,15 @@ def opt_tou(df, month_str):
     m.addConstr(ess_d[opt_len-1] == 0)
     m.addConstr(ess_c[opt_len-1] == 0)
 
+    # Add in peak demand
+    m.addConstr(pk_demand_grid == gp.max_(grid[t] for t in range(opt_len)))
+
     # Objective function
-    m.setObjective(HR_FRAC*tariff_opt @ grid, GRB.MINIMIZE)
+    m.setObjective(HR_FRAC*tariff_opt @ grid + pk_demand_grid*pd_opt, GRB.MINIMIZE)
 
     # Solve the optimization
-    # m.params.NonConvex = 2
     m.params.MIPGap = 2e-3
-    t = time.time()
     m.optimize()
-    elapsed = time.time() - t
-
-    # print("Elapsed time for 1 month of optimization: {}".format(elapsed))
                     
     tou_run = HR_FRAC * grid.X * tariff_opt
     grid_run = HR_FRAC * load * tariff_opt
@@ -144,8 +163,7 @@ def opt_tou(df, month_str):
 
 
 # %% 
-MONTH_STRS = ["2015-01", "2015-02", "2015-03", "2015-04", "2015-05", "2015-06",
-                "2015-07", "2015-08", "2015-09", "2015-10", "2015-11", "2015-12"]
+MONTH_STRS = df.index.strftime("%Y-%m").unique().tolist()
 
 # MONTH_STRS = ["2015-01", "2015-02", "2015-03"]
 
@@ -183,19 +201,23 @@ print("Elapsed optimization time: {}".format(elapsed))
 
 df_output = pd.DataFrame()
 df_output.index = df.index
-df_output["pv"] = df.solar
+if not "solar" in df:
+    df_output["pv"] = np.zeros((len(df),))
+else:
+    df_output["pv"] = df.solar
 df_output["load"] = df.load
 df_output["tariff"] = df.tariff
 df_output["tou_runs"] = tou_runs
 df_output["grid_runs"] = grid_runs
 df_output["grids"] = grids
-df_output["ess_disp"] = ess_ds - ess_cs
+df_output["ess_discharge"] = ess_ds
+df_output["ess_charge"] = ess_cs
 df_output["ess_soe"] = ess_Es
 df_output["pv_esss"] = pv_esss
 df_output["pv_grids"] = pv_grids
 df_output["pv_loads"] = pv_loads
 
-df_output.to_csv("df_9836_output.csv")
+df_output.to_csv("opt_" + load_tariff_name + "_output.csv")
 
 # %% Net profit from ESS
 # TODO: Fix these plots
@@ -251,20 +273,63 @@ p1 = ax1.plot(times_plt, ess_Es/BAT_KWH)
 plt.grid()
 
 # %% Load power flow disaggregation
+
+# Get random day in year
+day = np.random.randint(0,365)
+ndays = 2
+st = day*4*24
+end = day*4*24 + ndays*24*4
 fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
 fig.autofmt_xdate()
 plt.gcf().autofmt_xdate()
 xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
 ax1.xaxis.set_major_formatter(xfmt)
-ax1.set_xlim(times_plt[0], times_plt[0 + 4*24*7*14])
+# ax1.set_xlim(times_plt[day*4*24], times_plt[day*4*24 + 4*24*4])
 ax1.set_xlabel("Date")
 ax1.set_ylabel("Power, kW")
 ax1.set_title("System Power Flows")
-p1 = ax1.plot(times_plt, df.load, linewidth=4, linestyle=":")
-p2 = ax1.plot(times_plt, grids)
-p3 = ax1.plot(times_plt, ess_ds - ess_cs)
-p4 = ax1.plot(times_plt, pv_esss+pv_grids+pv_loads)
-plt.legend(["Load Demand", "Grid Supply", "ESS Dispatch", "PV Generation"])
-plt.grid()
+
+p1 = ax1.plot(times_plt[st:end], df.load[st:end], linewidth=4, linestyle=":")
+p2 = ax1.plot(times_plt[st:end], grids[st:end])
+p3 = ax1.plot(times_plt[st:end], ess_ds[st:end] - ess_cs[st:end])
+p4 = ax1.plot(times_plt[st:end], pv_esss[st:end]+pv_grids[st:end]+pv_loads[st:end])
+
+# Shrink current axis by 20%
+box = ax1.get_position()
+ax1.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+# Put a legend to the right of the current axis
+ax1.legend(["Load Demand", "Grid Supply", "ESS Dispatch", "PV Generation"],loc='center left', bbox_to_anchor=(1, 0.5))
+
+# %% PV power flow disaggregation
+
+# # Get random day in year
+# day = np.random.randint(0,365)
+# ndays = 2
+# st = day*4*24
+# end = day*4*24 + ndays*24*4
+fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+fig.autofmt_xdate()
+plt.gcf().autofmt_xdate()
+xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
+ax1.xaxis.set_major_formatter(xfmt)
+ax1.set_ylim(0, 2.5)
+ax1.set_xlabel("Date")
+ax1.set_ylabel("Power, kW")
+ax1.set_title("System Power Flows")
+
+p1 = ax1.plot(times_plt[st:end], pv_esss[st:end]+pv_grids[st:end]+pv_loads[st:end], linewidth=4, linestyle=":")
+p2 = ax1.plot(times_plt[st:end], pv_esss[st:end])
+p3 = ax1.plot(times_plt[st:end], pv_loads[st:end])
+p4 = ax1.plot(times_plt[st:end], pv_grids[st:end])
+
+# Shrink current axis by 20%
+box = ax1.get_position()
+ax1.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+# Put a legend to the right of the current axis
+ax1.legend(["Total PV", "PV to ESS", "PV to load", "PV to grid"],loc='center left', bbox_to_anchor=(1, 0.5))
+
+
 
 # %%
