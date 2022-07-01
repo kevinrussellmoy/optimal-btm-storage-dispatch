@@ -132,3 +132,5 @@ metadata.csv
 15minute_data_austin.csv
 site_weather.csv
 ele.csv
+*.csv
+*.csv
