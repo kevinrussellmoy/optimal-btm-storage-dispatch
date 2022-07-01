@@ -1,7 +1,6 @@
 # File to compute optimal TOU dispatch from load data and tariff rate pricing
 # Kevin Moy, 5/29/2021
 #%%
-import cvxpy as cp
 import time
 import pandas as pd
 import numpy as np
@@ -10,14 +9,14 @@ from gurobipy import GRB
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# Plot formatting defaults
-plt.rc('ytick', direction='out')
-plt.rc('grid', color='w', linestyle='solid')
-plt.rcParams['figure.figsize'] = [10, 8]
-plt.rcParams.update({'font.size': 18})
-plt.rc('xtick', direction='out')
-plt.rc('patch', edgecolor='#E6E6E6')
-plt.rc('lines', linewidth=2)
+# # Plot formatting defaults
+# plt.rc('ytick', direction='out')
+# plt.rc('grid', color='w', linestyle='solid')
+# plt.rcParams['figure.figsize'] = [10, 8]
+# plt.rcParams.update({'font.size': 18})
+# plt.rc('xtick', direction='out')
+# plt.rc('patch', edgecolor='#E6E6E6')
+# plt.rc('lines', linewidth=2)
 
 # %%Set environment variables:
 # LOAD_LEN = load.size  # length of optimization
@@ -104,11 +103,10 @@ def opt_tou(df, month_str):
         m.addConstr(ess_E[t] >= BAT_KWH_MIN) 
 
         # TOU power flow constraints
-        m.addConstr(ess_c[t] == pv_ess[t])
+        m.addConstr(ess_c[t] == pv_ess[t] + grid_ess[t])
         m.addConstr(grid[t] == grid_ess[t] + grid_load[t])
         m.addConstr(pv_opt[t] == pv_ess[t] + pv_grid[t] + pv_load[t])
         m.addConstr(ess_d[t] == ess_load[t])
-        # TODO: Figure out how to remove and add this constraint as load_opt changes in each iteration
         m.addConstr(load_opt[t] == ess_load[t] + grid_load[t] + pv_load[t])
 
         # #Ensure non-simultaneous charge and discharge across all LMP and TOU
@@ -163,6 +161,8 @@ pv_esss = []
 pv_grids = []
 pv_loads = []
 
+t = time.time()
+
 for month_str in MONTH_STRS:
     tou_run, grid_run, grid, ess_d, ess_c, ess_E, pv_ess, pv_grid, pv_load = opt_tou(df, month_str)
     tou_runs = np.hstack((tou_runs, tou_run))
@@ -174,6 +174,10 @@ for month_str in MONTH_STRS:
     pv_esss = np.hstack((pv_esss, pv_ess))
     pv_grids = np.hstack((pv_grids, pv_grid))
     pv_loads = np.hstack((pv_loads, pv_load))
+
+elapsed = time.time() - t
+
+print("Elapsed optimization time: {}".format(elapsed))
 
 # %% Stack output DF
 
@@ -252,7 +256,7 @@ fig.autofmt_xdate()
 plt.gcf().autofmt_xdate()
 xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
 ax1.xaxis.set_major_formatter(xfmt)
-ax1.set_xlim(times_plt[0], times_plt[0 + 4*24*7])
+ax1.set_xlim(times_plt[0], times_plt[0 + 4*24*7*14])
 ax1.set_xlabel("Date")
 ax1.set_ylabel("Power, kW")
 ax1.set_title("System Power Flows")

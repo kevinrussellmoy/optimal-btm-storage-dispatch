@@ -2,7 +2,6 @@
 # TODO: Merge with opt-tou.py and account for differences in nomenclature and available data (e.g. PV, peak demand)
 # Kevin Moy, 6/30/2022
 #%%
-from calendar import month
 import time
 import pandas as pd
 import numpy as np
@@ -42,6 +41,9 @@ df = df[0:-1] # Remove last entry of 1/1/2020 (ew)
 # Output: all optimal variables plus TOU costs (for both ESS and no ESS scenarios
 
 def opt_tou(df, month_str, flag_pv=False):
+
+    # TODO: Clean up these flag_pv statements. Maybe just set PV to zero if not available??
+
     load = df.loc[month_str].load.to_numpy()
     tariff = df.loc[month_str].tariff.to_numpy()
     peakdemand = df.loc[month_str].peakdemand.to_numpy()
@@ -98,7 +100,6 @@ def opt_tou(df, month_str, flag_pv=False):
     m.addConstr(ess_E[opt_len-1] == BAT_KWH_INIT)
 
     for t in range(opt_len):
-        # TODO: Clean up these flag_pv statements
 
         # ESS power constraints
         m.addConstr(ess_c[t] <= BAT_KW * chg_bin[t])
@@ -116,8 +117,8 @@ def opt_tou(df, month_str, flag_pv=False):
 
         # TOU power flow constraints
         if flag_pv:
-            # ESS can charge from PV
-            m.addConstr(ess_c[t] == pv_ess[t])
+            # ESS can charge from PV and grid
+            m.addConstr(ess_c[t] == pv_ess[t] + grid_ess[t])
         else:
             # ESS can only charge from grid
             m.addConstr(ess_c[t] == grid_ess[t])
@@ -203,6 +204,7 @@ ess_Es = []
 # pv_grids = []
 # pv_loads = []
 
+t = time.time()
 for month_str in MONTH_STRS:
     tou_run, grid_run, grid, ess_d, ess_c, ess_E = opt_tou(df, month_str)
     tou_runs = np.hstack((tou_runs, tou_run))
@@ -214,6 +216,11 @@ for month_str in MONTH_STRS:
     # pv_esss = np.hstack((pv_esss, pv_ess))
     # pv_grids = np.hstack((pv_grids, pv_grid))
     # pv_loads = np.hstack((pv_loads, pv_load))
+elapsed = time.time() - t
+
+print("Elapsed optimization time: {}".format(elapsed))
+
+
 
 # %% Stack output DF
 
