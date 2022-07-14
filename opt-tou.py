@@ -18,40 +18,11 @@ plt.rc('xtick', direction='out')
 plt.rc('patch', edgecolor='#E6E6E6')
 plt.rc('lines', linewidth=2)
 
-# %%Set environment variables:
-load_tariff_name = "9836"
-# load_tariff_name = "LBNL_bldg59"
-
-# Import load and tariff rate data; convert to numpy array and get length
-df = pd.read_csv("load_tariff_" + load_tariff_name + ".csv", index_col=0)
-df.index = pd.to_datetime(df.index)
-
-if load_tariff_name == "LBNL_bldg59":
-    df = df[0:-1] # Remove last entry of 1/1/2020 (ew)
-    # C&I BATTERY (based off Tesla Powerpack, multiplied by 2 for 4 hour system)
-    BAT_KW = 250.0  # Rated power of battery, in kW, continuous power for the Powerpack
-    BAT_KWH = 475.0 * 2  # Rated energy of battery, in kWh.
-else:
-    # RESIDENTIAL BATTERY
-    BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwall
-    BAT_KWH = 14.0  # Rated energy of battery, in kWh.
-    # Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
-    # but I have also seen that it's actually 14kwh, 13.5kWh usable
-
-BAT_KWH_MIN = 0.2 * BAT_KWH  # Minimum SOE of battery, 10% of rated
-BAT_KWH_MAX = 0.8 * BAT_KWH  # Maximum SOE of battery, 90% of rated
-BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
-HR_FRAC = (
-    15 / 60
-)  # Data at 15 minute intervals, which is 0.25 hours. Need for conversion between kW <-> kWh
-
-
-
 # %% Function to compute optimal monthly dispatch given load, tariff, pv, and start and end dates
 # Input: df with columns load, grid, solar, tariff, and index of datetime for timeseries
 # Output: all optimal variables plus TOU costs (for both ESS and no ESS scenarios
 
-def opt_tou(df, month_str):
+def opt_tou(df, month_str, bat_kwh_init, bat_kwh_min, bat_kwh_max, bat_kw, hr_frac):
 
     # TODO: Force load, pv, tariff, times to be all the same length
     opt_len = len(df.loc[month_str])
@@ -106,13 +77,13 @@ def opt_tou(df, month_str):
     pk_demand_grid = m.addVar(vtype=GRB.CONTINUOUS, name='pk_demand_grid')
 
     # Constrain initlal and final stored energy in battery
-    m.addConstr(ess_E[0] == BAT_KWH_INIT)
-    m.addConstr(ess_E[opt_len-1] == BAT_KWH_INIT)
+    m.addConstr(ess_E[0] == bat_kwh_init)
+    m.addConstr(ess_E[opt_len-1] == bat_kwh_init)
 
     for t in range(opt_len):
         # ESS power constraints
-        m.addConstr(ess_c[t] <= BAT_KW * chg_bin[t])
-        m.addConstr(ess_d[t] <= BAT_KW * dch_bin[t])
+        m.addConstr(ess_c[t] <= bat_kw * chg_bin[t])
+        m.addConstr(ess_d[t] <= bat_kw * dch_bin[t])
         m.addConstr(ess_c[t] >= 0)
         m.addConstr(ess_d[t] >= 0)
         m.addConstr(pv_ess[t] >= 0)
@@ -120,8 +91,8 @@ def opt_tou(df, month_str):
         m.addConstr(pv_grid[t] >= 0)
 
         # ESS energy constraints
-        m.addConstr(ess_E[t] <= BAT_KWH_MAX)
-        m.addConstr(ess_E[t] >= BAT_KWH_MIN) 
+        m.addConstr(ess_E[t] <= bat_kwh_max)
+        m.addConstr(ess_E[t] >= bat_kwh_min) 
 
         # TOU power flow constraints
         m.addConstr(ess_c[t] == pv_ess[t] + grid_ess[t])
@@ -135,7 +106,7 @@ def opt_tou(df, month_str):
 
     # Time evolution of stored energy
     for t in range(1,opt_len):
-        m.addConstr(ess_E[t] == HR_FRAC*(ess_c[t-1]) + ess_E[t-1] - HR_FRAC*(ess_d[t-1]))
+        m.addConstr(ess_E[t] == hr_frac*(ess_c[t-1]) + ess_E[t-1] - hr_frac*(ess_d[t-1]))
 
     # Prohibit power flow at the end of the horizon (otherwise energy balance is off)
     m.addConstr(ess_d[opt_len-1] == 0)
@@ -145,14 +116,14 @@ def opt_tou(df, month_str):
     m.addConstr(pk_demand_grid == gp.max_(grid[t] for t in range(opt_len)))
 
     # Objective function
-    m.setObjective(HR_FRAC*tariff_opt @ grid + pk_demand_grid*pd_opt, GRB.MINIMIZE)
+    m.setObjective(hr_frac*tariff_opt @ grid + pk_demand_grid*pd_opt, GRB.MINIMIZE)
 
     # Solve the optimization
     m.params.MIPGap = 2e-3
     m.optimize()
                     
-    tou_run = HR_FRAC * grid.X * tariff_opt
-    grid_run = HR_FRAC * load * tariff_opt
+    tou_run = hr_frac * grid.X * tariff_opt
+    grid_run = hr_frac * load * tariff_opt
 
     print("\n")
     print("Cumulative savings:")
@@ -162,62 +133,95 @@ def opt_tou(df, month_str):
 
 
 
-# %% 
-MONTH_STRS = df.index.strftime("%Y-%m").unique().tolist()
+# %%Set optimization constants:
+ca_ids = [3687, 6377, 7062, 8574, 9213, 203, 1450, 1524, 2606, 3864, 7114,
+       1731, 4495, 8342, 3938, 5938, 8061, 9775, 4934, 8733, 9612,
+       6547]
 
-# MONTH_STRS = ["2015-01", "2015-02", "2015-03"]
+for dataid in ca_ids:
+    # load_tariff_name = "9836"
+    # load_tariff_name = "LBNL_bldg59"
+    load_tariff_name = str(dataid)
 
+    # Import load and tariff rate data; convert to numpy array and get length
+    df = pd.read_csv("load_tariff_" + load_tariff_name + ".csv", index_col=0)
+    df.index = pd.to_datetime(df.index)
 
-# Allocate arrays to store output data
-tou_runs = []
-grid_runs = []
-grids = []
-ess_ds = []
-ess_cs = []
-ess_Es = []
-pv_esss = []
-pv_grids = []
-pv_loads = []
+    if load_tariff_name == "LBNL_bldg59":
+        df = df[0:-1] # Remove last entry of 1/1/2020 (ew)
+        # C&I BATTERY (based off Tesla Powerpack, multiplied by 2 for 4 hour system)
+        BAT_KW = 250.0  # Rated power of battery, in kW, continuous power for the Powerpack
+        BAT_KWH = 475.0 * 2  # Rated energy of battery, in kWh.
+    else:
+        # RESIDENTIAL BATTERY
+        BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwall
+        BAT_KWH = 14.0  # Rated energy of battery, in kWh.
+        # Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
+        # but I have also seen that it's actually 14kwh, 13.5kWh usable
 
-t = time.time()
+    BAT_KWH_MIN = 0.2 * BAT_KWH  # Minimum SOE of battery, 10% of rated
+    BAT_KWH_MAX = 0.8 * BAT_KWH  # Maximum SOE of battery, 90% of rated
+    BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
+    HR_FRAC = (
+        15 / 60
+    )  # Data at 15 minute intervals, which is 0.25 hours. Need for conversion between kW <-> kWh
 
-for month_str in MONTH_STRS:
-    tou_run, grid_run, grid, ess_d, ess_c, ess_E, pv_ess, pv_grid, pv_load = opt_tou(df, month_str)
-    tou_runs = np.hstack((tou_runs, tou_run))
-    grid_runs = np.hstack((grid_runs, grid_run))
-    grids = np.hstack((grids, grid))
-    ess_ds = np.hstack((ess_ds, ess_d))
-    ess_cs = np.hstack((ess_cs, ess_c))
-    ess_Es = np.hstack((ess_Es, ess_E))
-    pv_esss = np.hstack((pv_esss, pv_ess))
-    pv_grids = np.hstack((pv_grids, pv_grid))
-    pv_loads = np.hstack((pv_loads, pv_load))
+    MONTH_STRS = df.index.strftime("%Y-%m").unique().tolist()
+    # MONTH_STRS = ["2015-01", "2015-02", "2015-03"]
 
-elapsed = time.time() - t
+    # Allocate arrays to store output data
+    tou_runs = []
+    grid_runs = []
+    grids = []
+    ess_ds = []
+    ess_cs = []
+    ess_Es = []
+    pv_esss = []
+    pv_grids = []
+    pv_loads = []
 
-print("Elapsed optimization time: {}".format(elapsed))
+    t = time.time()
+
+    for month_str in MONTH_STRS:
+        tou_run, grid_run, grid, ess_d, ess_c, ess_E, pv_ess, pv_grid, pv_load = opt_tou(df, month_str, BAT_KWH_INIT, BAT_KWH_MIN, BAT_KWH_MAX, BAT_KW, HR_FRAC)
+        tou_runs = np.hstack((tou_runs, tou_run))
+        grid_runs = np.hstack((grid_runs, grid_run))
+        grids = np.hstack((grids, grid))
+        ess_ds = np.hstack((ess_ds, ess_d))
+        ess_cs = np.hstack((ess_cs, ess_c))
+        ess_Es = np.hstack((ess_Es, ess_E))
+        pv_esss = np.hstack((pv_esss, pv_ess))
+        pv_grids = np.hstack((pv_grids, pv_grid))
+        pv_loads = np.hstack((pv_loads, pv_load))
+
+    elapsed = time.time() - t
+
+    print("Elapsed optimization time: {}".format(elapsed))
+
+    df_output = pd.DataFrame()
+    df_output.index = df.index
+    if not "solar" in df:
+        df_output["pv"] = np.zeros((len(df),))
+    else:
+        df_output["pv"] = df.solar
+    df_output["load"] = df.load
+    df_output["tariff"] = df.tariff
+    df_output["tou_runs"] = tou_runs
+    df_output["grid_runs"] = grid_runs
+    df_output["grids"] = grids
+    df_output["ess_discharge"] = ess_ds
+    df_output["ess_charge"] = ess_cs
+    df_output["ess_soe"] = ess_Es
+    df_output["pv_esss"] = pv_esss
+    df_output["pv_grids"] = pv_grids
+    df_output["pv_loads"] = pv_loads
+
+    df_output.to_csv("opt_" + load_tariff_name + "_output.csv")
+    print("Saved opt_" + load_tariff_name + "_output.csv")
 
 # %% Stack output DF
 
-df_output = pd.DataFrame()
-df_output.index = df.index
-if not "solar" in df:
-    df_output["pv"] = np.zeros((len(df),))
-else:
-    df_output["pv"] = df.solar
-df_output["load"] = df.load
-df_output["tariff"] = df.tariff
-df_output["tou_runs"] = tou_runs
-df_output["grid_runs"] = grid_runs
-df_output["grids"] = grids
-df_output["ess_discharge"] = ess_ds
-df_output["ess_charge"] = ess_cs
-df_output["ess_soe"] = ess_Es
-df_output["pv_esss"] = pv_esss
-df_output["pv_grids"] = pv_grids
-df_output["pv_loads"] = pv_loads
 
-df_output.to_csv("opt_" + load_tariff_name + "_output.csv")
 
 # %% Net profit from ESS
 # TODO: Fix these plots
