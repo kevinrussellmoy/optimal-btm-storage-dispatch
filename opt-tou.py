@@ -66,23 +66,24 @@ def opt_tou(df, month_str, bat_kwh_init, bat_kwh_min, bat_kwh_max, bat_kw, hr_fr
     ess_c = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='ess_c')
     ess_d = m.addMVar(opt_len, lb=0, vtype=GRB.CONTINUOUS, name='ess_d')
 
-    #EXX binary variables for charge and discharge
-    chg_bin = m.addMVar(opt_len, vtype=GRB.BINARY, name='chg_bin')
+    # ESS binary variables for charge and discharge
+    # chg_bin = m.addMVar(opt_len, vtype=GRB.BINARY, name='chg_bin')
     dch_bin = m.addMVar(opt_len, vtype=GRB.BINARY, name='dch_bin')
 
-    #Energy stored in ESS
+    # Energy stored in ESS
     ess_E = m.addMVar(opt_len, vtype=GRB.CONTINUOUS, name='E')
 
     # Peak demand from grid variable
     pk_demand_grid = m.addVar(vtype=GRB.CONTINUOUS, name='pk_demand_grid')
 
     # Constrain initlal and final stored energy in battery
-    m.addConstr(ess_E[0] == bat_kwh_init)
-    m.addConstr(ess_E[opt_len-1] == bat_kwh_init)
+    m.addConstr(ess_E[0] == bat_kwh_min)
+    m.addConstr(ess_E[opt_len-1] == bat_kwh_min)
 
     for t in range(opt_len):
         # ESS power constraints
-        m.addConstr(ess_c[t] <= bat_kw * chg_bin[t])
+        # m.addConstr(ess_c[t] <= bat_kw * chg_bin[t])
+        m.addConstr(ess_c[t] <= bat_kw * (1 - dch_bin[t]))
         m.addConstr(ess_d[t] <= bat_kw * dch_bin[t])
         m.addConstr(ess_c[t] >= 0)
         m.addConstr(ess_d[t] >= 0)
@@ -101,8 +102,17 @@ def opt_tou(df, month_str, bat_kwh_init, bat_kwh_min, bat_kwh_max, bat_kw, hr_fr
         m.addConstr(ess_d[t] == ess_load[t])
         m.addConstr(load_opt[t] == ess_load[t] + grid_load[t] + pv_load[t])
 
-        # #Ensure non-simultaneous charge and discharge across all LMP and TOU
-        m.addConstr(chg_bin[t] + dch_bin[t] <= 1)
+        # # #Ensure non-simultaneous charge and discharge across all LMP and TOU
+        # m.addConstr(chg_bin[t] + dch_bin[t] <= 1)
+        # print(((t+1) * hr_frac) / 24)
+        # Charge-sustaining for each day
+        if ((t+1) * hr_frac) % 24 == 0:
+            # print("one full day")
+            m.addConstr(ess_E[t] == ess_E[t+1 - int(24/HR_FRAC)])
+            # Prohibit power flow at the end of the horizon (otherwise energy balance is off)
+            m.addConstr(ess_d[t] == 0)
+            m.addConstr(ess_c[t] == 0)
+
 
     # Time evolution of stored energy
     for t in range(1,opt_len):
@@ -119,7 +129,7 @@ def opt_tou(df, month_str, bat_kwh_init, bat_kwh_min, bat_kwh_max, bat_kw, hr_fr
     m.setObjective(hr_frac*tariff_opt @ grid + pk_demand_grid*pd_opt, GRB.MINIMIZE)
 
     # Solve the optimization
-    m.params.MIPGap = 2e-3
+    m.params.MIPGap = 2e-5
     m.optimize()
                     
     tou_run = hr_frac * grid.X * tariff_opt
@@ -134,9 +144,11 @@ def opt_tou(df, month_str, bat_kwh_init, bat_kwh_min, bat_kwh_max, bat_kw, hr_fr
 
 
 # %%Set optimization constants:
+# ca_ids = [7062]
+
 ca_ids = [3687, 6377, 7062, 8574, 9213, 203, 1450, 1524, 2606, 3864, 7114,
-       1731, 4495, 8342, 3938, 5938, 8061, 9775, 4934, 8733, 9612,
-       6547]
+        1731, 4495, 8342, 3938, 5938, 8061, 9775, 4934, 8733, 9612,
+        6547, 9836]
 
 for dataid in ca_ids:
     # load_tariff_name = "9836"
@@ -148,13 +160,12 @@ for dataid in ca_ids:
     df.index = pd.to_datetime(df.index)
 
     if load_tariff_name == "LBNL_bldg59":
-        df = df[0:-1] # Remove last entry of 1/1/2020 (ew)
         # C&I BATTERY (based off Tesla Powerpack, multiplied by 2 for 4 hour system)
         BAT_KW = 250.0  # Rated power of battery, in kW, continuous power for the Powerpack
         BAT_KWH = 475.0 * 2  # Rated energy of battery, in kWh.
     else:
         # RESIDENTIAL BATTERY
-        BAT_KW = 5.0  # Rated power of battery, in kW, continuous power for the Powerwall
+        BAT_KW = 5.0 # Rated power of battery, in kW, continuous power for the Powerwall
         BAT_KWH = 14.0  # Rated energy of battery, in kWh.
         # Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
         # but I have also seen that it's actually 14kwh, 13.5kWh usable
@@ -198,6 +209,7 @@ for dataid in ca_ids:
 
     print("Elapsed optimization time: {}".format(elapsed))
 
+    # Stack output DF
     df_output = pd.DataFrame()
     df_output.index = df.index
     if not "solar" in df:
@@ -216,12 +228,12 @@ for dataid in ca_ids:
     df_output["pv_grids"] = pv_grids
     df_output["pv_loads"] = pv_loads
 
-    df_output.to_csv("opt_" + load_tariff_name + "_output.csv")
-    print("Saved opt_" + load_tariff_name + "_output.csv")
+    df_output.to_csv("opt_" + load_tariff_name + "_output_v2.csv")
+    print("Saved opt_" + load_tariff_name + "_output_v2.csv")
 
-# %% Stack output DF
-
-
+    # df_output.to_csv("opt_LBNL_bldg59_output_v2.csv")
+    # print("Saved opt_LBNL_bldg59_output_v2.csv")
+    
 
 # %% Net profit from ESS
 # TODO: Fix these plots
@@ -306,8 +318,40 @@ ax1.set_position([box.x0, box.y0, box.width * 0.8, box.height])
 ax1.legend(["Load Demand", "Grid Supply", "ESS Dispatch", "PV Generation"],loc='center left', bbox_to_anchor=(1, 0.5))
 
 # %% PV power flow disaggregation
+# Get random day in year
+day = np.random.randint(0,365)
+ndays = 2
+st = day*4*24
+end = day*4*24 + ndays*24*4
+fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
+fig.autofmt_xdate()
+plt.gcf().autofmt_xdate()
+xfmt = mdates.DateFormatter("%m-%d-%y %H:%M")
+ax1.xaxis.set_major_formatter(xfmt)
+ax2 = ax1.twinx()
+ax1.set_xlabel("Date")
+ax1.set_ylabel("Power, kW")
+ax2.set_ylabel("Stored Energy, kWh")
+ax2.set_ylim(0,BAT_KWH)
+ax1.set_ylim(-BAT_KW,BAT_KW)
+ax1.set_title("System Power Flows")
 
-# # Get random day in year
+p1 = ax2.plot(times_plt[st:end], ess_Es[st:end], 'g-')
+p2 = ax1.plot(times_plt[st:end], -ess_cs[st:end])
+p3 = ax1.plot(times_plt[st:end], ess_ds[st:end])
+
+# p4 = ax1.plot(times_plt[st:end], pv_esss[st:end]+pv_grids[st:end]+pv_loads[st:end])
+
+
+# Shrink current axis by 20%
+box = ax1.get_position()
+ax1.set_position([box.x0, box.y0, box.width * 0.8, box.height])
+
+# Put a legend to the right of the current axis
+# ax1.legend(["Total PV", "PV to ESS", "PV to load", "PV to grid"],loc='center left', bbox_to_anchor=(1, 0.5))
+
+# %% PV power flow disaggregation
+# Get random day in year
 # day = np.random.randint(0,365)
 # ndays = 2
 # st = day*4*24
@@ -332,8 +376,5 @@ box = ax1.get_position()
 ax1.set_position([box.x0, box.y0, box.width * 0.8, box.height])
 
 # Put a legend to the right of the current axis
-ax1.legend(["Total PV", "PV to ESS", "PV to load", "PV to grid"],loc='center left', bbox_to_anchor=(1, 0.5))
-
-
-
+# ax1.legend(["Total PV", "PV to ESS", "PV to load", "PV to grid"],loc='center left', bbox_to_anchor=(1, 0.5))
 # %%
