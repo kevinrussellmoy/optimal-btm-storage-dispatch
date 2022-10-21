@@ -144,7 +144,7 @@ def opt_tou(df, month_str, bat_kwh_init, bat_kwh_min, bat_kwh_max, bat_kw, hr_fr
 
 
 # %%Set optimization constants:
-ca_ids = [7062]
+ca_ids = [9836]
 
 # ca_ids = [3687, 6377, 7062, 8574, 9213, 203, 1450, 1524, 2606, 3864, 7114,
 #         1731, 4495, 8342, 3938, 5938, 8061, 9775, 4934, 8733, 9612,
@@ -161,20 +161,20 @@ for dataid in ca_ids:
 
     if load_tariff_name == "LBNL_bldg59":
         # C&I BATTERY (based off Tesla Powerpack, multiplied by 2 for 4 hour system)
-        BAT_KW = 250.0  # Rated power of battery, in kW, continuous power for the Powerpack
-        BAT_KWH = 475.0 * 2  # Rated energy of battery, in kWh.
+        BAT_KW = 50.0 * 4  # Rated power of battery, in kW, continuous power for the Powerpack
+        BAT_KWH = 210.0 * 4  # Rated energy of battery, in kWh.
         BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
     else:
         # RESIDENTIAL BATTERY
         BAT_KW = 5.0 # Rated power of battery, in kW, continuous power for the Powerwall
-        BAT_KWH = 14.0  # Rated energy of battery, in kWh.
+        BAT_KWH = 13.5  # Rated energy of battery, in kWh.
         # Note Tesla Powerwall rates their energy at 13.5kWh, but at 100% DoD,
         # but I have also seen that it's actually 14kwh, 13.5kWh usable
         BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
 
     # TODO: Re-run this!!
-    BAT_KWH_MIN = 0.1 * BAT_KWH  # Minimum SOE of battery, 10% of rated
-    BAT_KWH_MAX = 0.9 * BAT_KWH  # Maximum SOE of battery, 90% of rated
+    BAT_KWH_MIN = 0.2 * BAT_KWH  # Minimum SOE of battery, 10% of rated
+    BAT_KWH_MAX = 0.8 * BAT_KWH  # Maximum SOE of battery, 90% of rated
     
     HR_FRAC = (
         15 / 60
