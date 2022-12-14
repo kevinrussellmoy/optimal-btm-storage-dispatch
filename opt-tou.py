@@ -162,7 +162,7 @@ for dataid in ca_ids:
     if load_tariff_name == "LBNL_bldg59":
         # C&I BATTERY (based off Tesla Powerpack, multiplied by 2 for 4 hour system)
         BAT_KW = 50.0 * 4  # Rated power of battery, in kW, continuous power for the Powerpack
-        BAT_KWH = 210.0 * 4  # Rated energy of battery, in kWh.
+        BAT_KWH = 200.0 * 2  # Rated energy of battery, in kWh.
         BAT_KWH_INIT = 0.5 * BAT_KWH  # Starting SOE of battery, 50% of rated
     else:
         # RESIDENTIAL BATTERY
@@ -234,8 +234,8 @@ for dataid in ca_ids:
     # df_output.to_csv("opt_" + load_tariff_name + "_output_v3.csv")
     # print("Saved opt_" + load_tariff_name + "_output_v3.csv")
 
-    df_output.to_csv("opt_LBNL_bldg59_output_v3.csv")
-    print("Saved opt_LBNL_bldg59_output_v3.csv")
+    df_output.to_csv("opt_LBNL_bldg59_output_v3_200kW_400kWh.csv")
+    print("Saved opt_LBNL_bldg59_output_v3_200kW_400kWh.csv")
     
 
 # %% Net profit from ESS
